@@ -25,6 +25,11 @@ pub fn main() !void {
 
     while (true) {
         const token = try xml.next();
+        if (token.tag == .invalid) {
+            print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
+            break;
+        }
+
         print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
         if (token.tag == .eof) break;
         try stdout.flush();

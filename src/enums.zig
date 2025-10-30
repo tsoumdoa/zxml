@@ -1,28 +1,41 @@
 pub const State = enum {
-    start,
-    doctype_q,
-    doctype_name,
-    doctype_name_start,
-    doctype,
-    doctype_attr_key,
-    doctype_attr_value_q,
-    doctype_attr_value,
-    doctype_end,
-    body,
-    content,
-    tag_name_start,
+    // to be deleted----
+    // start,
+    // prolog_doctype_start,
+    // prolog_start,
+    // doctype_start,
+    // prolog_name,
+    // doctype,
+    // prolog_attr_key,
+    // prolog_attr_value_start,
+    // prolog_attr_value_end,
+    // prolog_doctype_end,
+    // to be deleted----
+    tag_start,
     tag_name,
-    tag,
+    tag_body,
+    tag_end,
+    prolog_body,
+    prolog_end,
+    // tag_name_start,
+    // tag_name,
+    // tag,
+    tag_attr_key_q,
     tag_attr_key,
     tag_attr_value_q,
     tag_attr_value,
-    tag_close_start,
-    tag_close_name,
-    tag_close_b,
+    // tag_close_start,
+    // tag_close_name,
+    // tag_close_b,
+    closing_tag_start,
+    // closing_tag_name,
+    // closing_tag_end,
     self_closing_tag,
-    comment_start,
-    comment_body,
-    comment_end_maybe,
+    // body,
+    content,
+    // comment_start,
+    // comment_body,
+    // comment_end_maybe,
 };
 
 pub const Tag = enum {
@@ -34,13 +47,16 @@ pub const Tag = enum {
     /// * `attr_key`
     /// * `attr_value`
     /// * `tag_open`
-    doctype,
+    prolog_open,
+    prolog_end,
     /// Example: "<head>"
     /// Possible next tags:
     /// * `attr_key`
     /// * `tag_open`
     /// * `tag_close`
     /// * `content`
+    doctype,
+
     tag_open,
     /// Example: "</head>"
     /// Possible next tags:

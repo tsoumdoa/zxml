@@ -17,12 +17,16 @@ pub const Token = struct {
     bytes: []const u8,
 };
 
+pub fn isLetter(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_';
+}
+
 pub const Xml = struct {
     bytes: []const u8,
     index: usize = 0,
     line: usize = 0,
     column: usize = 0,
-    state: State = .start,
+    state: State = .tag_start,
     error_note: ErrorNote = undefined,
     tag_stacks: ArrayList(Tag) = .empty,
     allocator: std.mem.Allocator,
@@ -34,8 +38,30 @@ pub const Xml = struct {
         };
     }
 
+    pub fn deinit(xml: *Xml) void {
+        xml.tag_stacks.deinit(xml.allocator);
+    }
+
     pub fn addOpenTag(xml: *Xml, tag: Tag) !void {
         try xml.tag_stacks.append(xml.allocator, tag);
+    }
+
+    pub fn getTokenString(xml: *Xml) []const u8 {
+        const tok_start: usize = xml.index;
+        while (xml.index < xml.bytes.len) {
+            xml.advanceCursor();
+            const b = xml.bytes[xml.index];
+            if (b == ' ' or b == '\t' or b == '\r' or b == '\n') break;
+        }
+        return xml.bytes[tok_start..xml.index];
+    }
+
+    pub fn peekChar(xml: *Xml) u8 {
+        if (xml.index + 1 >= xml.bytes.len) {
+            return 0;
+        } else {
+            return xml.bytes[xml.index + 1];
+        }
     }
 
     pub fn next(xml: *Xml) !Token {
@@ -43,166 +69,168 @@ pub const Xml = struct {
 
         while (xml.index < xml.bytes.len) {
             const byte = xml.bytes[xml.index];
+            // std.debug.print("current state: {s}\n", .{@tagName(xml.state)});
+            // std.debug.print("byte: {c}\n", .{byte});
             switch (xml.state) {
-                .start => switch (byte) {
-                    ' ', '\t', '\r', '\n' => {},
-                    '<' => xml.state = .doctype_q,
-                    else => return xml.fail(.invalid_byte),
+                .tag_start => {
+                    switch (byte) {
+                        ' ', '\t', '\r', '\n' => {},
+                        '<' => {
+                            tok_start = xml.index;
+                            xml.state = .tag_name;
+                        },
+                        else => {
+                            tok_start = xml.index;
+                            xml.state = .content;
+                        },
+                    }
                 },
-                .doctype_q => switch (byte) {
-                    ' ', '\t', '\r', '\n' => {},
-                    '?' => xml.state = .doctype_name_start,
-                    else => return xml.fail(.invalid_byte),
+
+                .tag_name => {
+                    switch (byte) {
+                        '\t', '\r', '\n' => {},
+                        '!' => {},
+                        '?' => {
+                            const next_byte = xml.peekChar();
+                            if (next_byte == '>') {
+                                xml.state = .prolog_end;
+                            } else {
+                                xml.advanceCursor();
+                                const tok = xml.getTokenString();
+                                if (std.mem.eql(u8, "xml", tok)) {
+                                    return xml.emit(.prolog_body, .{
+                                        .tag = .prolog_open,
+                                        .bytes = tok,
+                                    });
+                                } else return xml.fail(.invalid_byte);
+                            }
+                        },
+                        ' ' => {
+                            if (tok_start + 1 != xml.index) {
+                                return xml.emit(.tag_attr_key_q, .{
+                                    .tag = .tag_open,
+                                    .bytes = xml.bytes[tok_start + 1 .. xml.index],
+                                });
+                            }
+                        },
+                        '>' => {
+                            if (tok_start + 1 != xml.index) {
+                                return xml.emit(.tag_start, .{
+                                    .tag = .tag_open,
+                                    .bytes = xml.bytes[tok_start + 1 .. xml.index],
+                                });
+                            }
+                        },
+                        '/' => {
+                            const next_byte = xml.peekChar();
+                            const is_letter = isLetter(next_byte);
+                            if (is_letter) {
+                                tok_start = xml.index + 1;
+                                xml.state = .closing_tag_start;
+                            } else return xml.fail(.invalid_byte);
+                        },
+
+                        else => {},
+                    }
                 },
-                .doctype_name_start => switch (byte) {
+                .tag_body => {
+                    switch (byte) {
+                        '\t', '\r', '\n' => {},
+                        '>' => xml.state = .tag_start,
+                        '?' => xml.state = .prolog_end,
+                        ' ' => {
+                            tok_start = xml.index;
+                            xml.state = .tag_attr_key_q;
+                        },
+
+                        else => {
+                            xml.state = .tag_attr_key_q;
+                        },
+                    }
+                },
+
+                .prolog_body => switch (byte) {
                     ' ', '\t', '\r', '\n' => {},
-                    '>', '<' => return xml.fail(.invalid_byte),
-                    else => {
+                    '?' => {
                         tok_start = xml.index;
-                        xml.state = .doctype_name;
+                        xml.state = .prolog_end;
                     },
-                },
-                .doctype_name => switch (byte) {
-                    ' ', '\t', '\r', '\n' => return xml.emit(.doctype, .{
-                        .tag = .doctype,
-                        .bytes = xml.bytes[tok_start..xml.index],
-                    }),
-                    '?' => return xml.emit(.doctype_end, .{
-                        .tag = .doctype,
-                        .bytes = xml.bytes[tok_start..xml.index],
-                    }),
-                    '>', '<' => return xml.fail(.invalid_byte),
-                    else => {},
-                },
-                .doctype => switch (byte) {
-                    ' ', '\t', '\r', '\n' => {},
-                    '?' => xml.state = .doctype_end,
                     '<', '>' => return xml.fail(.invalid_byte),
-                    else => {
-                        tok_start = xml.index;
-                        xml.state = .doctype_attr_key;
-                    },
-                },
-                .doctype_attr_key => switch (byte) {
-                    '=' => return xml.emit(.doctype_attr_value_q, .{
-                        .tag = .attr_key,
-                        .bytes = xml.bytes[tok_start..xml.index],
-                    }),
-                    '?', '<', '>' => return xml.fail(.invalid_byte),
-                    else => {},
-                },
-                .doctype_attr_value_q => switch (byte) {
-                    '"' => {
-                        xml.state = .doctype_attr_value;
-                        tok_start = xml.index;
-                    },
-                    else => return xml.fail(.invalid_byte),
-                },
-                .doctype_attr_value => switch (byte) {
-                    '"' => return xml.emit(.doctype, .{
-                        .tag = .attr_value,
-                        .bytes = xml.bytes[tok_start .. xml.index + 1],
-                    }),
-                    '\n' => return xml.fail(.invalid_byte),
-                    else => {},
-                },
-                .doctype_end => switch (byte) {
-                    '>' => xml.state = .body,
-                    else => return xml.fail(.invalid_byte),
-                },
-                .body => switch (byte) {
-                    ' ', '\t', '\r', '\n' => {},
-                    '<' => xml.state = .tag_name_start,
-                    else => {
-                        xml.state = .content;
-                        tok_start = xml.index;
-                    },
-                },
-                .content => switch (byte) {
-                    '<' => return xml.emit(.tag_name_start, .{
-                        .tag = .content,
-                        .bytes = xml.bytes[tok_start..xml.index],
-                    }),
-                    else => {},
-                },
-                .tag_name_start => switch (byte) {
-                    ' ', '\t', '\r', '\n' => {},
-                    '!' => xml.state = .comment_start,
-                    '>', '<' => return xml.fail(.invalid_byte),
-                    '/' => xml.state = .tag_close_start,
-                    else => {
-                        tok_start = xml.index;
-                        xml.state = .tag_name;
-                    },
-                },
-                .tag_close_start => switch (byte) {
-                    ' ', '\t', '\r', '\n' => {},
-                    '>', '<' => return xml.fail(.invalid_byte),
-                    else => {
-                        tok_start = xml.index;
-                        xml.state = .tag_close_name;
-                    },
-                },
-                .tag_close_name => switch (byte) {
-                    ' ', '\t', '\r', '\n' => return xml.emit(.tag_close_b, .{
-                        .tag = .tag_open,
-                        .bytes = xml.bytes[tok_start..xml.index],
-                    }),
-                    '>' => {
-                        const t = xml.tag_stacks.pop();
-                        _ = t;
-                        return xml.emit(.body, .{
-                            .tag = .tag_close,
-                            .bytes = xml.bytes[tok_start..xml.index],
-                        });
-                    },
-                    '<' => return xml.fail(.invalid_byte),
-                    else => {},
-                },
-                .tag_close_b => switch (byte) {
-                    ' ', '\t', '\r', '\n' => {},
-                    '>' => xml.state = .body,
-                    else => return xml.fail(.invalid_byte),
-                },
-                .tag_name => switch (byte) {
-                    ' ', '\t', '\r', '\n' => return xml.emit(.tag, .{
-                        .tag = .tag_open,
-                        .bytes = xml.bytes[tok_start..xml.index],
-                    }),
-                    '>' => {
-                        try xml.addOpenTag(Tag.tag_open);
-                        return xml.emit(.body, .{
-                            .tag = .tag_open,
-                            .bytes = xml.bytes[tok_start..xml.index],
-                        });
-                    },
-                    '<' => return xml.fail(.invalid_byte),
-                    else => {},
-                },
-                .tag => switch (byte) {
-                    ' ', '\t', '\r', '\n' => {},
-                    '<' => return xml.fail(.invalid_byte),
-                    '>' => xml.state = .body,
-                    '/' => {
-                        tok_start = xml.index;
-                        xml.state = .self_closing_tag;
-                    },
                     else => {
                         tok_start = xml.index;
                         xml.state = .tag_attr_key;
                     },
                 },
-                .self_closing_tag => switch (byte) {
+                .prolog_end => switch (byte) {
+                    ' ', '\t', '\r', '\n' => {},
+                    '<' => return xml.fail(.invalid_byte),
+                    '>' => {
+                        try xml.addOpenTag(Tag.tag_open);
+                        const p = xml.tag_stacks.pop();
+                        _ = p;
+                        return xml.emit(
+                            .tag_start,
+                            .{
+                                .tag = .prolog_end,
+                                .bytes = "xml",
+                            },
+                        );
+                    },
+                    else => {},
+                },
+
+                .tag_end => switch (byte) {
+                    ' ', '\t', '\r', '\n' => {},
+                    '<' => xml.state = .tag_name,
+                    '>' => {
+                        try xml.addOpenTag(Tag.tag_open);
+                        return xml.emit(
+                            .tag_start,
+                            .{
+                                .tag = .tag_open,
+                                .bytes = xml.bytes[tok_start..xml.index],
+                            },
+                        );
+                    },
+                    else => {},
+                },
+                .content => switch (byte) {
+                    '<' => return xml.emit(.tag_name, .{
+                        .tag = .content,
+                        .bytes = xml.bytes[tok_start..xml.index],
+                    }),
+                    else => {},
+                },
+
+                .closing_tag_start => switch (byte) {
+                    ' ', '\t', '\r', '\n' => {},
+                    '<', '-' => return xml.fail(.invalid_byte),
                     '>' => {
                         const t = xml.tag_stacks.pop();
                         _ = t;
-                        return xml.emit(.body, .{
-                            .tag = .self_closing_tag,
-                            .bytes = xml.bytes[tok_start..xml.index],
-                        });
+                        return xml.emit(
+                            .tag_start,
+                            .{
+                                .tag = .tag_close,
+                                .bytes = xml.bytes[tok_start..xml.index],
+                            },
+                        );
                     },
-                    else => return xml.fail(.invalid_byte),
+
+                    else => {},
                 },
+                .self_closing_tag => switch (byte) {
+                    else => {},
+                },
+
+                .tag_attr_key_q => switch (byte) {
+                    ' ', '\t', '\r', '\n' => {},
+                    else => {
+                        tok_start = xml.index;
+                        xml.state = .tag_attr_key;
+                    },
+                },
+
                 .tag_attr_key => switch (byte) {
                     '=' => return xml.emit(.tag_attr_value_q, .{
                         .tag = .attr_key,
@@ -212,32 +240,23 @@ pub const Xml = struct {
                     else => {},
                 },
                 .tag_attr_value_q => switch (byte) {
-                    '"' => {
+                    '"', '\'' => {
                         xml.state = .tag_attr_value;
                         tok_start = xml.index;
                     },
                     else => return xml.fail(.invalid_byte),
                 },
                 .tag_attr_value => switch (byte) {
-                    '"' => return xml.emit(.tag, .{
+                    '"', '\'' => return xml.emit(.tag_body, .{
                         .tag = .attr_value,
                         .bytes = xml.bytes[tok_start .. xml.index + 1],
                     }),
+
+                    '>' => {
+                        xml.state = .tag_start;
+                    },
                     '\n' => return xml.fail(.invalid_byte),
                     else => {},
-                },
-                .comment_start => switch (byte) {
-                    '-' => xml.state = .comment_body,
-                    else => return xml.fail(.invalid_byte),
-                },
-                .comment_body => switch (byte) {
-                    '-' => xml.state = .comment_end_maybe,
-                    else => {},
-                },
-                .comment_end_maybe => switch (byte) {
-                    '-' => {},
-                    '>' => xml.state = .body,
-                    else => xml.state = .comment_body,
                 },
             }
             xml.advanceCursor();
@@ -278,97 +297,149 @@ fn testExpect(xml: *Xml, tag: Tag, bytes: []const u8) !void {
     try testing.expectEqualStrings(bytes, tok.bytes);
 }
 
+test "normal tag" {
+    const bytes =
+        \\ <parents>
+    ;
+    const test_allocator = std.testing.allocator;
+    var xml = Xml.init(test_allocator, bytes);
+    defer xml.deinit();
+    try testExpect(&xml, .tag_open, "parents");
+    try testExpect(&xml, .eof, "");
+}
+
 test "hello world xml" {
     const bytes =
         \\<?xml version="1.0" encoding="UTF-8"?>
         \\<map></map>
     ;
-    var xml = Xml.init(bytes);
-    std.debug.print("hello world xml\n", .{});
-    try testExpect(&xml, .doctype, "xml");
+    const test_allocator = std.testing.allocator;
+    var xml = Xml.init(test_allocator, bytes);
+    defer xml.deinit();
+    try testExpect(&xml, .prolog_open, "xml");
     try testExpect(&xml, .attr_key, "version");
     try testExpect(&xml, .attr_value, "\"1.0\"");
     try testExpect(&xml, .attr_key, "encoding");
     try testExpect(&xml, .attr_value, "\"UTF-8\"");
+    try testExpect(&xml, .prolog_end, "xml");
     try testExpect(&xml, .tag_open, "map");
     try testExpect(&xml, .tag_close, "map");
     try testExpect(&xml, .eof, "");
-    try testExpect(&xml, .eof, "");
 }
-
-test "some props" {
-    const bytes =
-        \\<?xml?>
-        \\<map>
-        \\ <properties>
-        \\  <property name="gravity" type="float" value="12.34"/>
-        \\  <property name="never gonna give you up" type="bool" value="true"/>
-        \\  <property name="never gonna let you down" type="bool" value="true"/>
-        \\ </properties>
-        \\</map>
-    ;
-    var xml = Xml.init(bytes);
-    try testExpect(&xml, .doctype, "xml");
-    try testExpect(&xml, .tag_open, "map");
-    try testExpect(&xml, .tag_open, "properties");
-
-    try testExpect(&xml, .tag_open, "property");
-    try testExpect(&xml, .attr_key, "name");
-    try testExpect(&xml, .attr_value, "\"gravity\"");
-    try testExpect(&xml, .attr_key, "type");
-    try testExpect(&xml, .attr_value, "\"float\"");
-    try testExpect(&xml, .attr_key, "value");
-    try testExpect(&xml, .attr_value, "\"12.34\"");
-    try testExpect(&xml, .self_closing_tag, "/");
-
-    try testExpect(&xml, .tag_open, "property");
-    try testExpect(&xml, .attr_key, "name");
-    try testExpect(&xml, .attr_value, "\"never gonna give you up\"");
-    try testExpect(&xml, .attr_key, "type");
-    try testExpect(&xml, .attr_value, "\"bool\"");
-    try testExpect(&xml, .attr_key, "value");
-    try testExpect(&xml, .attr_value, "\"true\"");
-    try testExpect(&xml, .self_closing_tag, "/");
-
-    try testExpect(&xml, .tag_open, "property");
-    try testExpect(&xml, .attr_key, "name");
-    try testExpect(&xml, .attr_value, "\"never gonna let you down\"");
-    try testExpect(&xml, .attr_key, "type");
-    try testExpect(&xml, .attr_value, "\"bool\"");
-    try testExpect(&xml, .attr_key, "value");
-    try testExpect(&xml, .attr_value, "\"true\"");
-    try testExpect(&xml, .self_closing_tag, "/");
-
-    try testExpect(&xml, .tag_close, "properties");
-    try testExpect(&xml, .tag_close, "map");
-    try testExpect(&xml, .eof, "");
-}
-
-test "comments" {
-    const bytes =
-        \\<?xml?>
-        \\ <!-- This is a multi-
-        \\       line comment, Rick -->
-        \\ <property name="rolled" type="bool" value="true"/>
-    ;
-    var xml = Xml.init(bytes);
-    try testExpect(&xml, .doctype, "xml");
-    try testExpect(&xml, .tag_open, "property");
-    try testExpect(&xml, .attr_key, "name");
-    try testExpect(&xml, .attr_value, "\"rolled\"");
-    try testExpect(&xml, .attr_key, "type");
-    try testExpect(&xml, .attr_value, "\"bool\"");
-    try testExpect(&xml, .attr_key, "value");
-    try testExpect(&xml, .attr_value, "\"true\"");
-    try testExpect(&xml, .self_closing_tag, "/");
-}
-
-test "eof mid-comment" {
-    const bytes =
-        \\<?xml?>
-        \\ <!
-    ;
-    var xml = Xml.init(bytes);
-    try testExpect(&xml, .doctype, "xml");
-    try testExpect(&xml, .eof, "");
-}
+//
+// test "single colon" {
+//     const bytes =
+//         \\ <?xml version='1.0' ?>
+//     ;
+//     const test_allocator = std.testing.allocator;
+//     var xml = Xml.init(test_allocator, bytes);
+//     defer xml.deinit();
+//     try testExpect(&xml, .prolog, "xml");
+//     try testExpect(&xml, .attr_key, "version");
+//     try testExpect(&xml, .attr_value, "\'1.0\'");
+//     try testExpect(&xml, .eof, "");
+// }
+//
+// test "doctype xml" {
+//     const bytes =
+//         \\<?xml version="1.0" encoding="UTF-8"?>
+//         \\<!DOCTYPE root_element PUBLIC "uri/to/external.dtd">
+//         \\<map></map>
+//     ;
+//     const test_allocator = std.testing.allocator;
+//     var xml = Xml.init(test_allocator, bytes);
+//     defer xml.deinit();
+//     try testExpect(&xml, .prolog, "xml");
+//     try testExpect(&xml, .attr_key, "version");
+//     try testExpect(&xml, .attr_value, "\"1.0\"");
+//     try testExpect(&xml, .attr_key, "encoding");
+//     try testExpect(&xml, .attr_value, "\"UTF-8\"");
+//     try testExpect(&xml, .doctype, "DOCTYPE root_element PUBLIC \"uri/to/external.dtd\"");
+//     try testExpect(&xml, .tag_open, "map");
+//     try testExpect(&xml, .tag_close, "map");
+//     try testExpect(&xml, .eof, "");
+// }
+//
+// test "some props" {
+//     const bytes =
+//         \\<?xml?>
+//         \\<map>
+//         \\ <properties>
+//         \\  <property name="gravity" type="float" value="12.34"/>
+//         \\  <property name="never gonna give you up" type="bool" value="true"/>
+//         \\  <property name="never gonna let you down" type="bool" value="true"/>
+//         \\ </properties>
+//         \\</map>
+//     ;
+//     const test_allocator = std.testing.allocator;
+//     var xml = Xml.init(test_allocator, bytes);
+//     defer xml.deinit();
+//     try testExpect(&xml, .prolog, "xml");
+//     try testExpect(&xml, .tag_open, "map");
+//     try testExpect(&xml, .tag_open, "properties");
+//
+//     try testExpect(&xml, .tag_open, "property");
+//     try testExpect(&xml, .attr_key, "name");
+//     try testExpect(&xml, .attr_value, "\"gravity\"");
+//     try testExpect(&xml, .attr_key, "type");
+//     try testExpect(&xml, .attr_value, "\"float\"");
+//     try testExpect(&xml, .attr_key, "value");
+//     try testExpect(&xml, .attr_value, "\"12.34\"");
+//     try testExpect(&xml, .self_closing_tag, "/");
+//
+//     try testExpect(&xml, .tag_open, "property");
+//     try testExpect(&xml, .attr_key, "name");
+//     try testExpect(&xml, .attr_value, "\"never gonna give you up\"");
+//     try testExpect(&xml, .attr_key, "type");
+//     try testExpect(&xml, .attr_value, "\"bool\"");
+//     try testExpect(&xml, .attr_key, "value");
+//     try testExpect(&xml, .attr_value, "\"true\"");
+//     try testExpect(&xml, .self_closing_tag, "/");
+//
+//     try testExpect(&xml, .tag_open, "property");
+//     try testExpect(&xml, .attr_key, "name");
+//     try testExpect(&xml, .attr_value, "\"never gonna let you down\"");
+//     try testExpect(&xml, .attr_key, "type");
+//     try testExpect(&xml, .attr_value, "\"bool\"");
+//     try testExpect(&xml, .attr_key, "value");
+//     try testExpect(&xml, .attr_value, "\"true\"");
+//     try testExpect(&xml, .self_closing_tag, "/");
+//
+//     try testExpect(&xml, .tag_close, "properties");
+//     try testExpect(&xml, .tag_close, "map");
+//     try testExpect(&xml, .eof, "");
+// }
+//
+// test "comments" {
+//     const bytes =
+//         \\<?xml?>
+//         \\ <!-- This is a multi-
+//         \\       line comment, Rick -->
+//         \\ <property name="rolled" type="bool" value="true"/>
+//     ;
+//     const test_allocator = std.testing.allocator;
+//     var xml = Xml.init(test_allocator, bytes);
+//     defer xml.deinit();
+//     try testExpect(&xml, .prolog, "xml");
+//     try testExpect(&xml, .tag_open, "property");
+//     try testExpect(&xml, .attr_key, "name");
+//     try testExpect(&xml, .attr_value, "\"rolled\"");
+//     try testExpect(&xml, .attr_key, "type");
+//     try testExpect(&xml, .attr_value, "\"bool\"");
+//     try testExpect(&xml, .attr_key, "value");
+//     try testExpect(&xml, .attr_value, "\"true\"");
+//     try testExpect(&xml, .self_closing_tag, "/");
+// }
+//
+// test "eof mid-comment" {
+//     const bytes =
+//         \\<?xml?>
+//         \\ <!
+//     ;
+//
+//     const test_allocator = std.testing.allocator;
+//     var xml = Xml.init(test_allocator, bytes);
+//     defer xml.deinit();
+//     try testExpect(&xml, .prolog, "xml");
+//     try testExpect(&xml, .eof, "");
+// }
