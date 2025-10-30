@@ -151,11 +151,7 @@ pub const Xml = struct {
 
                 .prolog_body => switch (byte) {
                     ' ', '\t', '\r', '\n' => {},
-                    '?' => {
-                        tok_start = xml.index;
-                        xml.state = .prolog_end;
-                    },
-                    '<', '>' => return xml.fail(.invalid_byte),
+                    '<' => return xml.fail(.invalid_byte),
                     else => {
                         tok_start = xml.index;
                         xml.state = .tag_attr_key;
@@ -225,6 +221,8 @@ pub const Xml = struct {
 
                 .tag_attr_key_q => switch (byte) {
                     ' ', '\t', '\r', '\n' => {},
+                    '>' => xml.state = .tag_body,
+                    '?' => xml.state = .prolog_end,
                     else => {
                         tok_start = xml.index;
                         xml.state = .tag_attr_key;
@@ -236,7 +234,7 @@ pub const Xml = struct {
                         .tag = .attr_key,
                         .bytes = xml.bytes[tok_start..xml.index],
                     }),
-                    '<', '>' => return xml.fail(.invalid_byte),
+                    '<' => return xml.fail(.invalid_byte),
                     else => {},
                 },
                 .tag_attr_value_q => switch (byte) {
@@ -255,7 +253,6 @@ pub const Xml = struct {
                     '>' => {
                         xml.state = .tag_start;
                     },
-                    '\n' => return xml.fail(.invalid_byte),
                     else => {},
                 },
             }
@@ -327,18 +324,19 @@ test "hello world xml" {
     try testExpect(&xml, .eof, "");
 }
 //
-// test "single colon" {
-//     const bytes =
-//         \\ <?xml version='1.0' ?>
-//     ;
-//     const test_allocator = std.testing.allocator;
-//     var xml = Xml.init(test_allocator, bytes);
-//     defer xml.deinit();
-//     try testExpect(&xml, .prolog, "xml");
-//     try testExpect(&xml, .attr_key, "version");
-//     try testExpect(&xml, .attr_value, "\'1.0\'");
-//     try testExpect(&xml, .eof, "");
-// }
+test "single colon" {
+    const bytes =
+        \\ <?xml version='1.0' ?>
+    ;
+    const test_allocator = std.testing.allocator;
+    var xml = Xml.init(test_allocator, bytes);
+    defer xml.deinit();
+    try testExpect(&xml, .prolog_open, "xml");
+    try testExpect(&xml, .attr_key, "version");
+    try testExpect(&xml, .attr_value, "\'1.0\'");
+    try testExpect(&xml, .prolog_end, "xml");
+    try testExpect(&xml, .eof, "");
+}
 //
 // test "doctype xml" {
 //     const bytes =
