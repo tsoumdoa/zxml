@@ -64,6 +64,35 @@ pub const Xml = struct {
         }
     }
 
+    pub fn skipWhitespace(xml: *Xml) void {
+        while (xml.index < xml.bytes.len) {
+            const byte = xml.bytes[xml.index];
+            if (byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n') {
+                xml.advanceCursor();
+            } else {
+                break;
+            }
+        }
+    }
+
+    pub fn findSelfClosingTag(xml: *Xml) usize {
+        var index: usize = xml.index;
+        while (index < xml.bytes.len) : (index += 1) {
+            const byte = xml.bytes[index];
+            const is_letter = isLetter(byte);
+            if (is_letter) {
+                return 0;
+            }
+            if (byte == '/' and index + 1 < xml.bytes.len) {
+                const next_byte = xml.bytes[index + 1];
+                if (next_byte == '>') {
+                    return index;
+                }
+            } else continue;
+        }
+        return 0;
+    }
+
     pub fn next(xml: *Xml) !Token {
         var tok_start: usize = undefined;
 
@@ -106,6 +135,19 @@ pub const Xml = struct {
                             }
                         },
                         ' ' => {
+                            // NOTE:  this check ignoring key value ... sending
+                            // to tag_start fails as it tag_start assume that
+                            // it's out of the body...
+                            // need additional check to see if
+                            const is_self_closing_tag = xml.findSelfClosingTag();
+                            if (is_self_closing_tag != 0) {
+                                return xml.emit(.tag_start, .{
+                                    .tag = .self_closing_tag,
+                                    .bytes = xml.bytes[tok_start + 1 .. xml.index],
+                                });
+                            }
+
+                            //handle normal case
                             if (tok_start + 1 != xml.index) {
                                 return xml.emit(.tag_attr_key_q, .{
                                     .tag = .tag_open,
@@ -123,6 +165,13 @@ pub const Xml = struct {
                         },
                         '/' => {
                             const next_byte = xml.peekChar();
+                            if (next_byte == '>') {
+                                xml.advanceCursor();
+                                return xml.emit(.tag_start, .{
+                                    .tag = .self_closing_tag,
+                                    .bytes = xml.bytes[tok_start + 1 .. xml.index - 1],
+                                });
+                            }
                             const is_letter = isLetter(next_byte);
                             if (is_letter) {
                                 tok_start = xml.index + 1;
@@ -141,6 +190,12 @@ pub const Xml = struct {
                         ' ' => {
                             tok_start = xml.index;
                             xml.state = .tag_attr_key_q;
+                        },
+                        '/' => {
+                            return xml.emit(.tag_start, .{
+                                .tag = .self_closing_tag,
+                                .bytes = "/",
+                            });
                         },
 
                         else => {
@@ -195,6 +250,9 @@ pub const Xml = struct {
                         .tag = .content,
                         .bytes = xml.bytes[tok_start..xml.index],
                     }),
+                    '>' => {
+                        xml.state = .tag_start;
+                    },
                     else => {},
                 },
 
@@ -323,7 +381,7 @@ test "hello world xml" {
     try testExpect(&xml, .tag_close, "map");
     try testExpect(&xml, .eof, "");
 }
-//
+
 test "single colon" {
     const bytes =
         \\ <?xml version='1.0' ?>
@@ -336,6 +394,29 @@ test "single colon" {
     try testExpect(&xml, .attr_value, "\'1.0\'");
     try testExpect(&xml, .prolog_end, "xml");
     try testExpect(&xml, .eof, "");
+}
+
+test "self closing tag" {
+    const bytes =
+        \\ <parents/>
+        \\ <properties   />
+        \\ <property name="rolled" type="bool" value="true"/>
+    ;
+    const test_allocator = std.testing.allocator;
+    var xml = Xml.init(test_allocator, bytes);
+    defer xml.deinit();
+    try testExpect(&xml, .self_closing_tag, "parents");
+    try testExpect(&xml, .self_closing_tag, "properties");
+    try testExpect(&xml, .tag_open, "property");
+    try testExpect(&xml, .attr_key, "name");
+    try testExpect(&xml, .attr_value, "\"rolled\"");
+    try testExpect(&xml, .attr_key, "type");
+    try testExpect(&xml, .attr_value, "\"bool\"");
+    try testExpect(&xml, .attr_key, "value");
+    try testExpect(&xml, .attr_value, "\"true\"");
+    try testExpect(&xml, .self_closing_tag, "/");
+    try testExpect(&xml, .eof, "");
+    // try testExpect(&xml, .self_closing_tag, "/");
 }
 //
 // test "doctype xml" {
