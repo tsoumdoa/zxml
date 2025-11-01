@@ -64,17 +64,6 @@ pub const Xml = struct {
         }
     }
 
-    pub fn skipWhitespace(xml: *Xml) void {
-        while (xml.index < xml.bytes.len) {
-            const byte = xml.bytes[xml.index];
-            if (byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n') {
-                xml.advanceCursor();
-            } else {
-                break;
-            }
-        }
-    }
-
     pub fn findSelfClosingTag(xml: *Xml) usize {
         var index: usize = xml.index;
         while (index < xml.bytes.len) : (index += 1) {
@@ -135,10 +124,7 @@ pub const Xml = struct {
                             }
                         },
                         ' ' => {
-                            // NOTE:  this check ignoring key value ... sending
-                            // to tag_start fails as it tag_start assume that
-                            // it's out of the body...
-                            // need additional check to see if
+                            // check if it's self closing tag without attributes
                             const is_self_closing_tag = xml.findSelfClosingTag();
                             if (is_self_closing_tag != 0) {
                                 return xml.emit(.tag_start, .{
@@ -192,10 +178,14 @@ pub const Xml = struct {
                             xml.state = .tag_attr_key_q;
                         },
                         '/' => {
-                            return xml.emit(.tag_start, .{
-                                .tag = .self_closing_tag,
-                                .bytes = "/",
-                            });
+                            const next_byte = xml.peekChar();
+                            if (next_byte == '>') {
+                                xml.advanceCursor();
+                                return xml.emit(.tag_start, .{
+                                    .tag = .self_closing_tag,
+                                    .bytes = "/",
+                                });
+                            } else return xml.fail(.invalid_byte);
                         },
 
                         else => {
@@ -416,9 +406,56 @@ test "self closing tag" {
     try testExpect(&xml, .attr_value, "\"true\"");
     try testExpect(&xml, .self_closing_tag, "/");
     try testExpect(&xml, .eof, "");
-    // try testExpect(&xml, .self_closing_tag, "/");
 }
-//
+
+test "some props" {
+    const bytes =
+        \\<map>
+        \\ <properties>
+        \\  <property name="gravity" type="float" value="12.34"/>
+        \\  <property name="never gonna give you up" type="bool" value="true"/>
+        \\  <property name="never gonna let you down" type="bool" value="true"/>
+        \\ </properties>
+        \\</map>
+    ;
+    const test_allocator = std.testing.allocator;
+    var xml = Xml.init(test_allocator, bytes);
+    defer xml.deinit();
+    try testExpect(&xml, .tag_open, "map");
+    try testExpect(&xml, .tag_open, "properties");
+
+    try testExpect(&xml, .tag_open, "property");
+    try testExpect(&xml, .attr_key, "name");
+    try testExpect(&xml, .attr_value, "\"gravity\"");
+    try testExpect(&xml, .attr_key, "type");
+    try testExpect(&xml, .attr_value, "\"float\"");
+    try testExpect(&xml, .attr_key, "value");
+    try testExpect(&xml, .attr_value, "\"12.34\"");
+    try testExpect(&xml, .self_closing_tag, "/");
+
+    try testExpect(&xml, .tag_open, "property");
+    try testExpect(&xml, .attr_key, "name");
+    try testExpect(&xml, .attr_value, "\"never gonna give you up\"");
+    try testExpect(&xml, .attr_key, "type");
+    try testExpect(&xml, .attr_value, "\"bool\"");
+    try testExpect(&xml, .attr_key, "value");
+    try testExpect(&xml, .attr_value, "\"true\"");
+    try testExpect(&xml, .self_closing_tag, "/");
+
+    try testExpect(&xml, .tag_open, "property");
+    try testExpect(&xml, .attr_key, "name");
+    try testExpect(&xml, .attr_value, "\"never gonna let you down\"");
+    try testExpect(&xml, .attr_key, "type");
+    try testExpect(&xml, .attr_value, "\"bool\"");
+    try testExpect(&xml, .attr_key, "value");
+    try testExpect(&xml, .attr_value, "\"true\"");
+    try testExpect(&xml, .self_closing_tag, "/");
+
+    try testExpect(&xml, .tag_close, "properties");
+    try testExpect(&xml, .tag_close, "map");
+    try testExpect(&xml, .eof, "");
+}
+
 // test "doctype xml" {
 //     const bytes =
 //         \\<?xml version="1.0" encoding="UTF-8"?>
@@ -438,57 +475,7 @@ test "self closing tag" {
 //     try testExpect(&xml, .tag_close, "map");
 //     try testExpect(&xml, .eof, "");
 // }
-//
-// test "some props" {
-//     const bytes =
-//         \\<?xml?>
-//         \\<map>
-//         \\ <properties>
-//         \\  <property name="gravity" type="float" value="12.34"/>
-//         \\  <property name="never gonna give you up" type="bool" value="true"/>
-//         \\  <property name="never gonna let you down" type="bool" value="true"/>
-//         \\ </properties>
-//         \\</map>
-//     ;
-//     const test_allocator = std.testing.allocator;
-//     var xml = Xml.init(test_allocator, bytes);
-//     defer xml.deinit();
-//     try testExpect(&xml, .prolog, "xml");
-//     try testExpect(&xml, .tag_open, "map");
-//     try testExpect(&xml, .tag_open, "properties");
-//
-//     try testExpect(&xml, .tag_open, "property");
-//     try testExpect(&xml, .attr_key, "name");
-//     try testExpect(&xml, .attr_value, "\"gravity\"");
-//     try testExpect(&xml, .attr_key, "type");
-//     try testExpect(&xml, .attr_value, "\"float\"");
-//     try testExpect(&xml, .attr_key, "value");
-//     try testExpect(&xml, .attr_value, "\"12.34\"");
-//     try testExpect(&xml, .self_closing_tag, "/");
-//
-//     try testExpect(&xml, .tag_open, "property");
-//     try testExpect(&xml, .attr_key, "name");
-//     try testExpect(&xml, .attr_value, "\"never gonna give you up\"");
-//     try testExpect(&xml, .attr_key, "type");
-//     try testExpect(&xml, .attr_value, "\"bool\"");
-//     try testExpect(&xml, .attr_key, "value");
-//     try testExpect(&xml, .attr_value, "\"true\"");
-//     try testExpect(&xml, .self_closing_tag, "/");
-//
-//     try testExpect(&xml, .tag_open, "property");
-//     try testExpect(&xml, .attr_key, "name");
-//     try testExpect(&xml, .attr_value, "\"never gonna let you down\"");
-//     try testExpect(&xml, .attr_key, "type");
-//     try testExpect(&xml, .attr_value, "\"bool\"");
-//     try testExpect(&xml, .attr_key, "value");
-//     try testExpect(&xml, .attr_value, "\"true\"");
-//     try testExpect(&xml, .self_closing_tag, "/");
-//
-//     try testExpect(&xml, .tag_close, "properties");
-//     try testExpect(&xml, .tag_close, "map");
-//     try testExpect(&xml, .eof, "");
-// }
-//
+
 // test "comments" {
 //     const bytes =
 //         \\<?xml?>
@@ -508,17 +495,4 @@ test "self closing tag" {
 //     try testExpect(&xml, .attr_key, "value");
 //     try testExpect(&xml, .attr_value, "\"true\"");
 //     try testExpect(&xml, .self_closing_tag, "/");
-// }
-//
-// test "eof mid-comment" {
-//     const bytes =
-//         \\<?xml?>
-//         \\ <!
-//     ;
-//
-//     const test_allocator = std.testing.allocator;
-//     var xml = Xml.init(test_allocator, bytes);
-//     defer xml.deinit();
-//     try testExpect(&xml, .prolog, "xml");
-//     try testExpect(&xml, .eof, "");
 // }
