@@ -107,7 +107,19 @@ pub const Xml = struct {
                 .tag_name => {
                     switch (byte) {
                         '\t', '\r', '\n' => {},
-                        '!' => {},
+                        '!' => {
+                            const tok = xml.getTokenString();
+                            if (std.mem.eql(u8, "!DOCTYPE", tok)) {
+                                xml.advanceCursor();
+                                tok_start = xml.index;
+                                xml.state = .doctype;
+                            }
+                            if (std.mem.eql(u8, "!--", tok)) {
+                                xml.advanceCursor();
+                                tok_start = xml.index;
+                                xml.state = .comment_q;
+                            }
+                        },
                         '?' => {
                             const next_byte = xml.peekChar();
                             if (next_byte == '>') {
@@ -220,6 +232,18 @@ pub const Xml = struct {
                     else => {},
                 },
 
+                .doctype => switch (byte) {
+                    ' ', '\t', '\r', '\n' => {},
+                    '>' => {
+                        return xml.emit(.tag_start, .{
+                            .tag = .doctype,
+                            .bytes = xml.bytes[tok_start..xml.index],
+                        });
+                    },
+
+                    else => {},
+                },
+
                 .tag_end => switch (byte) {
                     ' ', '\t', '\r', '\n' => {},
                     '<' => xml.state = .tag_name,
@@ -285,6 +309,7 @@ pub const Xml = struct {
                     '<' => return xml.fail(.invalid_byte),
                     else => {},
                 },
+
                 .tag_attr_value_q => switch (byte) {
                     '"', '\'' => {
                         xml.state = .tag_attr_value;
@@ -292,6 +317,7 @@ pub const Xml = struct {
                     },
                     else => return xml.fail(.invalid_byte),
                 },
+
                 .tag_attr_value => switch (byte) {
                     '"', '\'' => return xml.emit(.tag_body, .{
                         .tag = .attr_value,
@@ -300,6 +326,27 @@ pub const Xml = struct {
 
                     '>' => {
                         xml.state = .tag_start;
+                    },
+                    else => {},
+                },
+
+                .comment_q => switch (byte) {
+                    ' ', '\t', '\r', '\n' => {},
+                    '>' => return xml.fail(.invalid_byte),
+                    else => {
+                        xml.state = .comment_body;
+                    },
+                },
+                .comment_body => switch (byte) {
+                    ' ', '\t', '\r', '\n' => {},
+                    '-' => {
+                        const next_byte = xml.getTokenString();
+                        if (std.mem.eql(u8, "-->", next_byte)) {
+                            return xml.emit(.tag_start, .{
+                                .tag = .comment,
+                                .bytes = xml.bytes[tok_start .. xml.index - 4],
+                            });
+                        }
                     },
                     else => {},
                 },
@@ -456,43 +503,47 @@ test "some props" {
     try testExpect(&xml, .eof, "");
 }
 
-// test "doctype xml" {
-//     const bytes =
-//         \\<?xml version="1.0" encoding="UTF-8"?>
-//         \\<!DOCTYPE root_element PUBLIC "uri/to/external.dtd">
-//         \\<map></map>
-//     ;
-//     const test_allocator = std.testing.allocator;
-//     var xml = Xml.init(test_allocator, bytes);
-//     defer xml.deinit();
-//     try testExpect(&xml, .prolog, "xml");
-//     try testExpect(&xml, .attr_key, "version");
-//     try testExpect(&xml, .attr_value, "\"1.0\"");
-//     try testExpect(&xml, .attr_key, "encoding");
-//     try testExpect(&xml, .attr_value, "\"UTF-8\"");
-//     try testExpect(&xml, .doctype, "DOCTYPE root_element PUBLIC \"uri/to/external.dtd\"");
-//     try testExpect(&xml, .tag_open, "map");
-//     try testExpect(&xml, .tag_close, "map");
-//     try testExpect(&xml, .eof, "");
-// }
+test "doctype xml" {
+    const bytes =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE root_element PUBLIC "uri/to/external.dtd">
+        \\<map>MAP CONTENT</map>
+    ;
+    const test_allocator = std.testing.allocator;
+    var xml = Xml.init(test_allocator, bytes);
+    defer xml.deinit();
 
-// test "comments" {
-//     const bytes =
-//         \\<?xml?>
-//         \\ <!-- This is a multi-
-//         \\       line comment, Rick -->
-//         \\ <property name="rolled" type="bool" value="true"/>
-//     ;
-//     const test_allocator = std.testing.allocator;
-//     var xml = Xml.init(test_allocator, bytes);
-//     defer xml.deinit();
-//     try testExpect(&xml, .prolog, "xml");
-//     try testExpect(&xml, .tag_open, "property");
-//     try testExpect(&xml, .attr_key, "name");
-//     try testExpect(&xml, .attr_value, "\"rolled\"");
-//     try testExpect(&xml, .attr_key, "type");
-//     try testExpect(&xml, .attr_value, "\"bool\"");
-//     try testExpect(&xml, .attr_key, "value");
-//     try testExpect(&xml, .attr_value, "\"true\"");
-//     try testExpect(&xml, .self_closing_tag, "/");
-// }
+    try testExpect(&xml, .prolog_open, "xml");
+    try testExpect(&xml, .attr_key, "version");
+    try testExpect(&xml, .attr_value, "\"1.0\"");
+    try testExpect(&xml, .attr_key, "encoding");
+    try testExpect(&xml, .attr_value, "\"UTF-8\"");
+    try testExpect(&xml, .prolog_end, "xml");
+    try testExpect(&xml, .doctype, "root_element PUBLIC \"uri/to/external.dtd\"");
+    try testExpect(&xml, .tag_open, "map");
+    try testExpect(&xml, .content, "MAP CONTENT");
+    try testExpect(&xml, .tag_close, "map");
+    try testExpect(&xml, .eof, "");
+}
+
+test "comments" {
+    const bytes =
+        \\<!-- single line comment -->
+        \\ <!-- This is a multi-
+        \\line comment, Rick -->
+        \\ <property name="rolled" type="bool" value="true"/>
+    ;
+    const test_allocator = std.testing.allocator;
+    var xml = Xml.init(test_allocator, bytes);
+    defer xml.deinit();
+    try testExpect(&xml, .comment, "single line comment");
+    try testExpect(&xml, .comment, "This is a multi-\nline comment, Rick");
+    try testExpect(&xml, .tag_open, "property");
+    try testExpect(&xml, .attr_key, "name");
+    try testExpect(&xml, .attr_value, "\"rolled\"");
+    try testExpect(&xml, .attr_key, "type");
+    try testExpect(&xml, .attr_value, "\"bool\"");
+    try testExpect(&xml, .attr_key, "value");
+    try testExpect(&xml, .attr_value, "\"true\"");
+    try testExpect(&xml, .self_closing_tag, "/");
+}
