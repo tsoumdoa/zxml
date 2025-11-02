@@ -3,7 +3,6 @@ const Xml = @import("xml.zig").Xml;
 const testing = std.testing;
 const ArrayList = std.ArrayList;
 const State = @import("enums.zig").State;
-const print = std.debug.print;
 
 pub fn main() !void {
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -26,16 +25,16 @@ pub fn main() !void {
     while (true) {
         const token = try xml.next();
         if (token.tag == .invalid) {
-            print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
+            try stdout.print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
             break;
         }
 
-        print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
+        try stdout.print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
         if (token.tag == .eof) break;
         try stdout.flush();
     }
 
-    print("{d}\n", .{xml.tag_stacks.items.len});
+    try stdout.print("{d}\n", .{xml.tag_stacks.items.len});
 
     try stdout.flush();
 }
