@@ -18,7 +18,7 @@ pub fn main() !void {
         try std.fs.cwd().readFileAlloc(arena, input_file, max_bytes),
     );
 
-    var stdout_buffer: [300]u8 = undefined;
+    var stdout_buffer: [150]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
 
