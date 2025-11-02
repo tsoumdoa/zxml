@@ -109,11 +109,14 @@ pub const Xml = struct {
                         '\t', '\r', '\n' => {},
                         '!' => {
                             const tok = xml.getTokenString();
+                            //check if it's doctype
                             if (std.mem.eql(u8, "!DOCTYPE", tok)) {
                                 xml.advanceCursor();
                                 tok_start = xml.index;
                                 xml.state = .doctype;
                             }
+
+                            //check if it's comment
                             if (tok.len >= 3 and std.mem.eql(u8, "!--", tok[0..3])) {
                                 xml.advanceCursor();
                                 tok_start = xml.index;
@@ -121,6 +124,7 @@ pub const Xml = struct {
                             }
                         },
                         '?' => {
+                            //check if it's prolog
                             const next_byte = xml.peekChar();
                             if (next_byte == '>') {
                                 xml.state = .prolog_end;
@@ -272,7 +276,7 @@ pub const Xml = struct {
 
                 .closing_tag_start => switch (byte) {
                     ' ', '\t', '\r', '\n' => {},
-                    '<', '-' => return xml.fail(.invalid_byte),
+                    '<', => return xml.fail(.invalid_byte),
                     '>' => {
                         const t = xml.tag_stacks.pop();
                         _ = t;
