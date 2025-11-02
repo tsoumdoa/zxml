@@ -114,7 +114,7 @@ pub const Xml = struct {
                                 tok_start = xml.index;
                                 xml.state = .doctype;
                             }
-                            if (std.mem.eql(u8, "!--", tok)) {
+                            if (tok.len >= 3 and std.mem.eql(u8, "!--", tok[0..3])) {
                                 xml.advanceCursor();
                                 tok_start = xml.index;
                                 xml.state = .comment_q;
@@ -288,12 +288,19 @@ pub const Xml = struct {
                     else => {},
                 },
                 .self_closing_tag => switch (byte) {
+                    '>' => {
+                        return xml.emit(.tag_start, .{
+                            .tag = .self_closing_tag,
+                            .bytes = "/",
+                        });
+                    },
                     else => {},
                 },
 
                 .tag_attr_key_q => switch (byte) {
                     ' ', '\t', '\r', '\n' => {},
                     '>' => xml.state = .tag_body,
+                    '/' => xml.state = .self_closing_tag,
                     '?' => xml.state = .prolog_end,
                     else => {
                         tok_start = xml.index;
@@ -546,4 +553,24 @@ test "comments" {
     try testExpect(&xml, .attr_key, "value");
     try testExpect(&xml, .attr_value, "\"true\"");
     try testExpect(&xml, .self_closing_tag, "/");
+}
+
+test "chunk and chunks" {
+    const bytes =
+        \\ <chunks count="1">
+        \\ <chunk name="Attributes" />
+        \\ </chunks>
+    ;
+    const test_allocator = std.testing.allocator;
+    var xml = Xml.init(test_allocator, bytes);
+    defer xml.deinit();
+    try testExpect(&xml, .tag_open, "chunks");
+    try testExpect(&xml, .attr_key, "count");
+    try testExpect(&xml, .attr_value, "\"1\"");
+    try testExpect(&xml, .tag_open, "chunk");
+    try testExpect(&xml, .attr_key, "name");
+    try testExpect(&xml, .attr_value, "\"Attributes\"");
+    try testExpect(&xml, .self_closing_tag, "/");
+    try testExpect(&xml, .tag_close, "chunks");
+    try testExpect(&xml, .eof, "");
 }
