@@ -13,6 +13,9 @@ pub const ErrorNote = enum {
 };
 
 pub const Token = struct {
+    global_index: ?usize = 0,
+    depth: usize = 0,
+    local_index: usize = 0,
     tag: Tag,
     bytes: []const u8,
 };
@@ -22,6 +25,9 @@ pub fn isLetter(c: u8) bool {
 }
 
 pub const Xml = struct {
+    global_index: usize = 0,
+    local_index: usize = 0,
+    current_depth: usize = 0,
     bytes: []const u8,
     index: usize = 0,
     line: usize = 0,
@@ -133,6 +139,7 @@ pub const Xml = struct {
                                 const tok = xml.getTokenString();
                                 if (std.mem.eql(u8, "xml", tok)) {
                                     return xml.emit(.prolog_body, .{
+                                        .global_index = xml.global_index,
                                         .tag = .prolog_open,
                                         .bytes = tok,
                                     });
@@ -144,6 +151,8 @@ pub const Xml = struct {
                             const is_self_closing_tag = xml.findSelfClosingTag();
                             if (is_self_closing_tag != 0) {
                                 return xml.emit(.tag_start, .{
+                                    .depth = xml.current_depth,
+                                    .global_index = xml.global_index,
                                     .tag = .self_closing_tag,
                                     .bytes = xml.bytes[tok_start + 1 .. xml.index],
                                 });
@@ -151,7 +160,11 @@ pub const Xml = struct {
 
                             //handle normal case
                             if (tok_start + 1 != xml.index) {
+                                const depth = xml.current_depth;
+                                xml.current_depth += 1;
                                 return xml.emit(.tag_attr_key_q, .{
+                                    .depth = depth,
+                                    .global_index = xml.global_index,
                                     .tag = .tag_open,
                                     .bytes = xml.bytes[tok_start + 1 .. xml.index],
                                 });
@@ -159,7 +172,11 @@ pub const Xml = struct {
                         },
                         '>' => {
                             if (tok_start + 1 != xml.index) {
+                                const depth = xml.current_depth;
+                                xml.current_depth += 1;
                                 return xml.emit(.tag_start, .{
+                                    .depth = depth,
+                                    .global_index = xml.global_index,
                                     .tag = .tag_open,
                                     .bytes = xml.bytes[tok_start + 1 .. xml.index],
                                 });
@@ -170,6 +187,8 @@ pub const Xml = struct {
                             if (next_byte == '>') {
                                 xml.advanceCursor();
                                 return xml.emit(.tag_start, .{
+                                    .depth = xml.current_depth,
+                                    .global_index = xml.global_index,
                                     .tag = .self_closing_tag,
                                     .bytes = xml.bytes[tok_start + 1 .. xml.index - 1],
                                 });
@@ -198,6 +217,8 @@ pub const Xml = struct {
                             if (next_byte == '>') {
                                 xml.advanceCursor();
                                 return xml.emit(.tag_start, .{
+                                    .depth = xml.current_depth,
+                                    .global_index = xml.global_index,
                                     .tag = .self_closing_tag,
                                     .bytes = "/",
                                 });
@@ -228,6 +249,7 @@ pub const Xml = struct {
                         return xml.emit(
                             .tag_start,
                             .{
+                                .global_index = xml.global_index,
                                 .tag = .prolog_end,
                                 .bytes = "xml",
                             },
@@ -240,6 +262,7 @@ pub const Xml = struct {
                     ' ', '\t', '\r', '\n' => {},
                     '>' => {
                         return xml.emit(.tag_start, .{
+                            .global_index = xml.global_index,
                             .tag = .doctype,
                             .bytes = xml.bytes[tok_start..xml.index],
                         });
@@ -253,9 +276,13 @@ pub const Xml = struct {
                     '<' => xml.state = .tag_name,
                     '>' => {
                         try xml.addOpenTag(Tag.tag_open);
+                        const depth = xml.current_depth;
+                        xml.current_depth += 1;
                         return xml.emit(
                             .tag_start,
                             .{
+                                .depth = depth,
+                                .global_index = xml.global_index,
                                 .tag = .tag_open,
                                 .bytes = xml.bytes[tok_start..xml.index],
                             },
@@ -265,6 +292,8 @@ pub const Xml = struct {
                 },
                 .content => switch (byte) {
                     '<' => return xml.emit(.tag_name, .{
+                        .depth = xml.current_depth,
+                        .global_index = xml.global_index,
                         .tag = .content,
                         .bytes = xml.bytes[tok_start..xml.index],
                     }),
@@ -276,13 +305,19 @@ pub const Xml = struct {
 
                 .closing_tag_start => switch (byte) {
                     ' ', '\t', '\r', '\n' => {},
-                    '<', => return xml.fail(.invalid_byte),
+                    '<',
+                    => return xml.fail(.invalid_byte),
                     '>' => {
                         const t = xml.tag_stacks.pop();
                         _ = t;
+                        if (xml.current_depth == 0) return xml.fail(.invalid_byte);
+                        const depth = xml.current_depth - 1;
+                        xml.current_depth = depth;
                         return xml.emit(
                             .tag_start,
                             .{
+                                .depth = depth,
+                                .global_index = xml.global_index,
                                 .tag = .tag_close,
                                 .bytes = xml.bytes[tok_start..xml.index],
                             },
@@ -294,6 +329,7 @@ pub const Xml = struct {
                 .self_closing_tag => switch (byte) {
                     '>' => {
                         return xml.emit(.tag_start, .{
+                            .global_index = xml.global_index,
                             .tag = .self_closing_tag,
                             .bytes = "/",
                         });
@@ -314,6 +350,8 @@ pub const Xml = struct {
 
                 .tag_attr_key => switch (byte) {
                     '=' => return xml.emit(.tag_attr_value_q, .{
+                        .depth = xml.current_depth,
+                        .global_index = xml.global_index,
                         .tag = .attr_key,
                         .bytes = xml.bytes[tok_start..xml.index],
                     }),
@@ -331,6 +369,8 @@ pub const Xml = struct {
 
                 .tag_attr_value => switch (byte) {
                     '"', '\'' => return xml.emit(.tag_body, .{
+                        .depth = xml.current_depth,
+                        .global_index = xml.global_index,
                         .tag = .attr_value,
                         .bytes = xml.bytes[tok_start .. xml.index + 1],
                     }),
@@ -354,6 +394,7 @@ pub const Xml = struct {
                         const next_byte = xml.getTokenString();
                         if (std.mem.eql(u8, "-->", next_byte)) {
                             return xml.emit(.tag_start, .{
+                                .global_index = xml.global_index,
                                 .tag = .comment,
                                 .bytes = xml.bytes[tok_start .. xml.index - 4],
                             });
@@ -372,10 +413,15 @@ pub const Xml = struct {
 
     fn fail(xml: *Xml, note: ErrorNote) Token {
         xml.error_note = note;
-        return .{ .tag = .invalid, .bytes = xml.bytes[xml.index..][0..0] };
+        return .{
+            .tag = .invalid,
+            .bytes = xml.bytes[xml.index..][0..0],
+            .global_index = xml.global_index,
+        };
     }
 
     fn emit(xml: *Xml, next_state: State, token: Token) Token {
+        xml.global_index += 1;
         xml.state = next_state;
         xml.advanceCursor();
         return token;
