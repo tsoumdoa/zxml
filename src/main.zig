@@ -30,11 +30,10 @@ pub fn main() !void {
         }
 
         try stdout.print(
-            "{?}@{any},{any} {s}: {s}\n",
+            "{?}@{any}, {s}: {s}\n",
             .{
                 token.global_index,
                 token.depth,
-                token.local_index,
                 @tagName(token.tag),
                 token.bytes,
             },

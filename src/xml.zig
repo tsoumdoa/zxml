@@ -15,7 +15,6 @@ pub const ErrorNote = enum {
 pub const Token = struct {
     global_index: ?usize = 0,
     depth: usize = 0,
-    local_index: usize = 0,
     tag: Tag,
     bytes: []const u8,
 };
