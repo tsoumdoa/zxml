@@ -30,7 +30,7 @@ pub fn main() !void {
         }
 
         try stdout.print(
-            "{?}@{any},{any} {s}: {s}\n",
+            "{?}@{any},{any} {s}: {s}\n\n",
             .{
                 token.global_index,
                 token.depth,

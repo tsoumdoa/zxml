@@ -35,6 +35,7 @@ pub const Xml = struct {
     state: State = .tag_start,
     error_note: ErrorNote = undefined,
     tag_stacks: ArrayList(Tag) = .empty,
+    tag_count_stacks: ArrayList(usize) = .empty,
     allocator: std.mem.Allocator,
 
     pub fn init(allcator: std.mem.Allocator, bytes: []const u8) Xml {
@@ -50,6 +51,29 @@ pub const Xml = struct {
 
     pub fn addOpenTag(xml: *Xml, tag: Tag) !void {
         try xml.tag_stacks.append(xml.allocator, tag);
+
+        const c_depth_plus = if (xml.current_depth > 0) xml.current_depth - 1 else xml.current_depth;
+        const c_stack_len = xml.tag_count_stacks.items.len + 1;
+
+        // std.debug.print("depth: {d}, stack len: {d}\n", .{ c_depth_plus, c_stack_len });
+        // std.debug.print("stack: {any}\n", .{xml.tag_count_stacks.items});
+
+        if (xml.global_index == 0 or c_depth_plus > c_stack_len) {
+            try xml.tag_count_stacks.append(xml.allocator, 0);
+            xml.local_index = 0;
+            return;
+        }
+
+        if (c_depth_plus == c_stack_len) {
+            const p = xml.tag_count_stacks.pop();
+            if (p) |v| {
+                xml.local_index = v + 1;
+                try xml.tag_count_stacks.append(xml.allocator, v + 1);
+            }
+        } else if (c_depth_plus < c_stack_len) {
+            const p = xml.tag_count_stacks.pop();
+            _ = p;
+        }
     }
 
     pub fn getTokenString(xml: *Xml) []const u8 {
@@ -162,9 +186,11 @@ pub const Xml = struct {
                             if (tok_start + 1 != xml.index) {
                                 const depth = xml.current_depth;
                                 xml.current_depth += 1;
+                                try xml.addOpenTag(.tag_open);
                                 return xml.emit(.tag_attr_key_q, .{
                                     .depth = depth,
                                     .global_index = xml.global_index,
+                                    .local_index = xml.local_index,
                                     .tag = .tag_open,
                                     .bytes = xml.bytes[tok_start + 1 .. xml.index],
                                 });
@@ -174,9 +200,11 @@ pub const Xml = struct {
                             if (tok_start + 1 != xml.index) {
                                 const depth = xml.current_depth;
                                 xml.current_depth += 1;
+                                try xml.addOpenTag(.tag_open);
                                 return xml.emit(.tag_start, .{
                                     .depth = depth,
                                     .global_index = xml.global_index,
+                                    .local_index = xml.local_index,
                                     .tag = .tag_open,
                                     .bytes = xml.bytes[tok_start + 1 .. xml.index],
                                 });
@@ -283,6 +311,7 @@ pub const Xml = struct {
                             .{
                                 .depth = depth,
                                 .global_index = xml.global_index,
+                                .local_index = xml.local_index,
                                 .tag = .tag_open,
                                 .bytes = xml.bytes[tok_start..xml.index],
                             },
