@@ -29,7 +29,15 @@ pub fn main() !void {
             break;
         }
 
-        try stdout.print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
+        try stdout.print(
+            "{?}@{any}, {s}: {s}\n",
+            .{
+                token.global_index,
+                token.depth,
+                @tagName(token.tag),
+                token.bytes,
+            },
+        );
         if (token.tag == .eof) break;
         try stdout.flush();
     }
