@@ -4,23 +4,26 @@ const testing = std.testing;
 const ArrayList = std.ArrayList;
 const State = @import("enums.zig").State;
 
-pub fn main() !void {
-    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const args = try std.process.argsAlloc(arena);
-    defer std.process.argsFree(arena, args);
-    const input_file = args[1];
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
 
-    const max_bytes = std.math.maxInt(u32);
+    var args_iter = std.process.Args.iterate(init.minimal.args);
+    _ = args_iter.next().?;
+    const input_file = args_iter.next().?;
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
     var xml = Xml.init(
-        arena,
-        try std.fs.cwd().readFileAlloc(arena, input_file, max_bytes),
+        allocator,
+        try std.Io.Dir.cwd().readFileAlloc(io, input_file, allocator, .unlimited),
     );
 
     var stdout_buffer: [150]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
+    var stdout_file_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    const stdout = &stdout_file_writer.interface;
 
     while (true) {
         const token = try xml.next();
